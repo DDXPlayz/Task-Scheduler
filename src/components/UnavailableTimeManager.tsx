@@ -1,14 +1,8 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { UnavailableBlock } from '@/types/task';
-import { Card } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
+import { Card, Button, Badge, Input, Label } from '@/components/ui/basic';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Checkbox, Textarea } from '@/components/ui/forms';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Checkbox } from '@/components/ui/checkbox';
 import { Plus, Clock, Trash2, Repeat, Calendar } from 'lucide-react';
 
 interface UnavailableTimeManagerProps {

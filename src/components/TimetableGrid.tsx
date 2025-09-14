@@ -1,12 +1,8 @@
-import React, { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo, DragEvent } from 'react';
 import { TimeBlock, UnavailableBlock } from '@/types/task';
-import { Card } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
+import { Card, Button, Badge, Input, Label } from '@/components/ui/basic';
+import { Textarea } from '@/components/ui/forms';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
 import { Clock, Plus, GripVertical, X, Calendar, Users, Coffee, Briefcase, BookOpen, Gamepad2, Ban } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
@@ -110,18 +106,18 @@ export default function TimetableGrid({
     }
   };
 
-  const handleDragStart = (e: React.DragEvent, taskId: string) => {
+  const handleDragStart = (e: DragEvent, taskId: string) => {
     if (timetable.find(b => b.taskId === taskId)?.isFixed) return;
     setDraggedTask(taskId);
     e.dataTransfer.effectAllowed = 'move';
   };
 
-  const handleDragOver = (e: React.DragEvent) => {
+  const handleDragOver = (e: DragEvent) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
   };
 
-  const handleDrop = (e: React.DragEvent, hour: number, minute: number) => {
+  const handleDrop = (e: DragEvent, hour: number, minute: number) => {
     e.preventDefault();
     if (!draggedTask) return;
 
@@ -210,7 +206,7 @@ export default function TimetableGrid({
   };
 
   // Auto-scroll to keep current slot at top (fixed to not overshoot)
-  const currentSlotKey = React.useMemo(() => {
+  const currentSlotKey = useMemo(() => {
     if (!isToday) return null;
     for (const { hour, minute } of timeSlots) {
       const slotTime = new Date(selectedDate);

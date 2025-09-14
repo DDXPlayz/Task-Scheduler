@@ -30,7 +30,6 @@ export class TimetableScheduler {
     today.setHours(0, 0, 0, 0);
     
     if (targetDate < today) {
-      console.warn('Cannot generate timetable for past dates');
       return [];
     }
 
@@ -94,8 +93,8 @@ export class TimetableScheduler {
       return blockDate.toDateString() === targetDate.toDateString();
     }
 
-    // Check if this date is in the exceptions list
-    const dateString = date.toISOString().split('T')[0]; // YYYY-MM-DD format
+    // Check if this date is in the exceptions list  
+    const dateString = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
     if (block.recurring.exceptions?.includes(dateString)) {
       return false;
     }
@@ -196,19 +195,19 @@ export class TimetableScheduler {
           return false;
         }
         
-        // If scheduled for a different date, don't include for this target date
+        // If scheduled for a past date and task is incomplete, reschedule to target date
+        if (scheduledDateOnly < todayOnly && !task.completed) {
+          return true;
+        }
+        
+        // If scheduled for a different future date, don't include for this target date
         return false;
       }
       
       // For unscheduled tasks:
-      // Include overdue tasks only for today (try to catch up)
-      if (isOverdue && isToday) {
+      // Include overdue tasks for any date from today onwards (reschedule to next available day)
+      if (isOverdue && targetDateOnly >= todayOnly) {
         return true;
-      }
-      
-      // Don't schedule overdue tasks for future dates
-      if (isOverdue && !isToday) {
-        return false;
       }
       
       // Include tasks due on or after the target date
@@ -435,9 +434,9 @@ export class TimetableScheduler {
     const now = currentTime || new Date();
     
     return [...tasks].sort((a, b) => {
-      const getBalancedScore = (task: Task) => {
-        const timeToDeadline = task.deadline.getTime() - now.getTime();
-        const hoursToDeadline = timeToDeadline / (1000 * 60 * 60);
+      // Calculate urgency scores
+      const getScore = (task: Task) => {
+        const hoursToDeadline = (task.deadline.getTime() - now.getTime()) / (1000 * 60 * 60);
         
         let score = 0;
         
@@ -448,23 +447,21 @@ export class TimetableScheduler {
         else score += 15;
         
         // Priority weight (0-40)
-        if (task.priority === 'high') score += 40;
-        else if (task.priority === 'medium') score += 25;
-        else score += 10;
+        const priorityScores = { high: 40, medium: 25, low: 10 };
+        score += priorityScores[task.priority];
         
         // Task type balance (0-15)
-        if (task.type === 'work') score += 15;
-        else if (task.type === 'study') score += 12;
-        else score += 8;
+        const typeScores = { work: 15, study: 12, leisure: 8 };
+        score += typeScores[task.type];
         
-        // Wellbeing factor - reduce score for very long tasks to spread them out
+        // Reduce score for very long tasks to spread them out
         if (task.duration > 120) score -= 10;
         if (task.duration > 180) score -= 15;
         
         return score;
       };
       
-      return getBalancedScore(b) - getBalancedScore(a);
+      return getScore(b) - getScore(a);
     });
   }
 
@@ -535,5 +532,96 @@ export class TimetableScheduler {
     }
     
     return true;
+  }
+
+  // Enhanced method to handle rescheduling when unavailable blocks are added  
+  addUnavailableBlockAndReschedule(block: UnavailableBlock, targetDate: Date): { 
+    updatedTimetable: TimeBlock[], 
+    rescheduledTasksCount: number 
+  } {
+    // Temporarily add the block to check for conflicts (don't persist here, Dashboard will manage state)
+    this.unavailableBlocks.push(block);
+    
+    // Count conflicting tasks that will be rescheduled
+    let rescheduledCount = 0;
+    
+    if (block.recurring) {
+      // For recurring blocks, count conflicts across multiple days
+      const datesToCheck = [targetDate];
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      if (block.recurring.type === 'daily') {
+        // Check next 7 days for daily recurring blocks
+        for (let i = 1; i <= 7; i++) {
+          const futureDate = new Date(targetDate);
+          futureDate.setDate(futureDate.getDate() + i);
+          if (futureDate >= today) {
+            datesToCheck.push(futureDate);
+          }
+        }
+      } else if (block.recurring.type === 'weekly' && block.recurring.days) {
+        // Check next 4 weeks for weekly recurring blocks
+        for (let week = 0; week < 4; week++) {
+          for (const dayOfWeek of block.recurring.days) {
+            const futureDate = new Date(targetDate);
+            const daysUntilTarget = (dayOfWeek - targetDate.getDay() + 7) % 7;
+            futureDate.setDate(futureDate.getDate() + (week * 7) + daysUntilTarget);
+            if (futureDate >= today) {
+              datesToCheck.push(futureDate);
+            }
+          }
+        }
+      }
+      
+      // Clear scheduled times for conflicting tasks
+      datesToCheck.forEach(date => {
+        this.tasks.forEach(task => {
+          if (!task.scheduledTime || task.completed) return;
+          
+          const taskDate = new Date(task.scheduledTime);
+          if (taskDate.toDateString() !== date.toDateString()) return;
+          
+          const blockStart = new Date(date);
+          blockStart.setHours(block.startTime.getHours(), block.startTime.getMinutes(), 0, 0);
+          const blockEnd = new Date(date);
+          blockEnd.setHours(block.endTime.getHours(), block.endTime.getMinutes(), 0, 0);
+          
+          const taskEnd = new Date(task.scheduledTime.getTime() + task.duration * 60000);
+          if (task.scheduledTime < blockEnd && taskEnd > blockStart) {
+            task.scheduledTime = undefined; // Clear scheduling, will be rescheduled
+            rescheduledCount++;
+          }
+        });
+      });
+    } else {
+      // For one-time blocks, clear conflicting tasks on the specific date
+      const blockStart = new Date(block.startTime);
+      const blockEnd = new Date(block.endTime);
+      
+      this.tasks.forEach(task => {
+        if (!task.scheduledTime || task.completed) return;
+        
+        const taskDate = new Date(task.scheduledTime);
+        if (taskDate.toDateString() !== blockStart.toDateString()) return;
+        
+        const taskEnd = new Date(task.scheduledTime.getTime() + task.duration * 60000);
+        if (task.scheduledTime < blockEnd && taskEnd > blockStart) {
+          task.scheduledTime = undefined; // Clear scheduling, will be rescheduled
+          rescheduledCount++;
+        }
+      });
+    }
+    
+    // Regenerate timetable to reschedule cleared tasks
+    const updatedTimetable = this.generateTimetable(targetDate);
+    
+    // Remove the temporarily added block - Dashboard will manage the actual state
+    this.unavailableBlocks.pop();
+    
+    return {
+      updatedTimetable,
+      rescheduledTasksCount: rescheduledCount
+    };
   }
 }

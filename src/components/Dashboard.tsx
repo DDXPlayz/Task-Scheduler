@@ -1,12 +1,10 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { Task, ScheduleBlock, TimeBlock, UnavailableBlock } from '@/types/task';
-import { TimetableScheduler } from '@/lib/timetable-scheduler';
-import { useLocalStorage } from '@/hooks/useLocalStorage';
-import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import TaskForm from '@/components/TaskForm';
-import TaskList from '@/components/TaskList';
+import { useLocalStorage, useScheduler } from '@/hooks';
+import { convertTasksToScheduleBlocks, updateTaskScheduledTime, toggleTaskCompletion, removeTaskById } from '@/lib/utils';
+import { Button, Card } from '@/components/ui/basic';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/forms';
+import { TaskForm, TaskList } from '@/components/TaskManager';
 import ScheduleTimeline from '@/components/ScheduleTimeline';
 import TimetableGrid from '@/components/TimetableGrid';
 import UnavailableTimeManager from '@/components/UnavailableTimeManager';
@@ -23,7 +21,7 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState('overview');
   const { toast } = useToast();
 
-  const scheduler = useMemo(() => new TimetableScheduler(), []);
+  const { generateTimetableForDate, rescheduleTask: rescheduleTaskInScheduler, addUnavailableBlockAndReschedule } = useScheduler(tasks, unavailableBlocks);
 
   const addTask = (taskData: Omit<Task, 'id' | 'completed' | 'createdAt'>) => {
     const newTask: Task = {
@@ -40,33 +38,19 @@ export default function Dashboard() {
     });
   };
 
+  const syncScheduleFromTasks = (updatedTasks: Task[]) => {
+    const newTimetable = generateTimetableForDate(selectedDate);
+    setTimetable(newTimetable);
+    setSchedule(convertTasksToScheduleBlocks(updatedTasks));
+  };
+
   const toggleTaskComplete = (taskId: string) => {
-    const updatedTasks = tasks.map(task => 
-      task.id === taskId ? { ...task, completed: !task.completed } : task
-    );
+    const updatedTasks = toggleTaskCompletion(tasks, taskId);
     setTasks(updatedTasks);
     
     const task = updatedTasks.find(t => t.id === taskId);
     if (task) {
-      // Regenerate schedule when task completion changes
-      scheduler.setTasks(updatedTasks);
-      scheduler.setUnavailableBlocks(unavailableBlocks);
-      const newTimetable = scheduler.generateTimetable(selectedDate);
-      setTimetable(newTimetable);
-      
-      // Update timeline with remaining scheduled tasks (exclude completed tasks)
-      const allScheduledTasks = updatedTasks.filter(task => task.scheduledTime && !task.completed);
-      const scheduleBlocks: ScheduleBlock[] = allScheduledTasks.map(task => ({
-        id: `scheduled-${task.id}`,
-        type: 'task' as const,
-        taskId: task.id,
-        task: task,
-        startTime: new Date(task.scheduledTime!),
-        endTime: new Date(task.scheduledTime!.getTime() + task.duration * 60000),
-        title: task.name,
-        description: `${task.type} • ${task.priority} priority • ${task.duration}m`,
-      }));
-      setSchedule(scheduleBlocks.sort((a, b) => a.startTime.getTime() - b.startTime.getTime()));
+      syncScheduleFromTasks(updatedTasks);
       
       toast({
         title: task.completed ? "Task completed!" : "Task unmarked",
@@ -77,7 +61,8 @@ export default function Dashboard() {
 
   const deleteTask = (taskId: string) => {
     const task = tasks.find(t => t.id === taskId);
-    setTasks(prev => prev.filter(task => task.id !== taskId));
+    const updatedTasks = removeTaskById(tasks, taskId);
+    setTasks(updatedTasks);
     
     if (task) {
       toast({
@@ -89,37 +74,18 @@ export default function Dashboard() {
   };
 
   const generateSchedule = () => {
-    scheduler.setTasks(tasks);
-    scheduler.setUnavailableBlocks(unavailableBlocks);
-    const newSchedule = scheduler.generateTimetable(selectedDate);
-    setTimetable(newSchedule);
+    const newTimetable = generateTimetableForDate(selectedDate);
+    setTimetable(newTimetable);
     
-    // Update tasks with scheduled times and sync to timeline
+    // Update tasks with scheduled times
     const updatedTasks = tasks.map(task => {
-      const taskBlock = newSchedule.find(block => block.taskId === task.id);
-      if (taskBlock) {
-        return { ...task, scheduledTime: taskBlock.startTime };
-      }
-      return task;
+      const taskBlock = newTimetable.find(block => block.taskId === task.id);
+      return taskBlock ? { ...task, scheduledTime: taskBlock.startTime } : task;
     });
     setTasks(updatedTasks);
     
-    // Convert all scheduled tasks to ScheduleBlock format for timeline (exclude completed)
-    const allScheduledTasks = updatedTasks.filter(task => task.scheduledTime && !task.completed);
-    const scheduleBlocks: ScheduleBlock[] = allScheduledTasks.map(task => ({
-      id: `scheduled-${task.id}`,
-      type: 'task' as const,
-      taskId: task.id,
-      task: task,
-      startTime: new Date(task.scheduledTime!),
-      endTime: new Date(task.scheduledTime!.getTime() + task.duration * 60000),
-      title: task.name,
-      description: `${task.type} • ${task.priority} priority • ${task.duration}m`,
-    }));
-    
-    setSchedule(scheduleBlocks.sort((a, b) => a.startTime.getTime() - b.startTime.getTime()));
-    
-    // Switch to schedule tab when generating schedule
+    const scheduleBlocks = convertTasksToScheduleBlocks(updatedTasks);
+    setSchedule(scheduleBlocks);
     setActiveTab('schedule');
     
     toast({
@@ -129,36 +95,18 @@ export default function Dashboard() {
   };
 
   const generateTimetable = () => {
-    // Use the same engine for consistency
     generateSchedule();
-    // Switch to timetable tab when generating timetable
     setActiveTab('timetable');
   };
 
-  // Auto-generate schedule when date changes (but not when unavailable blocks change to avoid double-regeneration)
+  // Auto-generate schedule when date changes
   useEffect(() => {
     if (tasks.length > 0) {
-      scheduler.setTasks(tasks);
-      scheduler.setUnavailableBlocks(unavailableBlocks);
-      const newTimetable = scheduler.generateTimetable(selectedDate);
+      const newTimetable = generateTimetableForDate(selectedDate);
       setTimetable(newTimetable);
-      
-      // Sync timeline with all scheduled tasks across all dates (exclude completed tasks)
-      const allScheduledTasks = tasks.filter(task => task.scheduledTime && !task.completed);
-      const scheduleBlocks: ScheduleBlock[] = allScheduledTasks.map(task => ({
-        id: `scheduled-${task.id}`,
-        type: 'task' as const,
-        taskId: task.id,
-        task: task,
-        startTime: new Date(task.scheduledTime!),
-        endTime: new Date(task.scheduledTime!.getTime() + task.duration * 60000),
-        title: task.name,
-        description: `${task.type} • ${task.priority} priority • ${task.duration}m`,
-      }));
-      
-      setSchedule(scheduleBlocks.sort((a, b) => a.startTime.getTime() - b.startTime.getTime()));
+      setSchedule(convertTasksToScheduleBlocks(tasks));
     }
-  }, [selectedDate, tasks, scheduler]); // Removed unavailableBlocks dependency to prevent double-regeneration
+  }, [selectedDate, tasks, generateTimetableForDate]);
 
   const handleRescheduleTask = (taskId: string, newStartTime: Date) => {
     // Prevent rescheduling to past times
@@ -217,30 +165,14 @@ export default function Dashboard() {
       return;
     }
 
-    // Update the scheduler's tasks with the new scheduled time
-    const updatedTasks = tasks.map(task => 
-      task.id === taskId ? { ...task, scheduledTime: newStartTime } : task
-    );
+    // Update tasks with the new scheduled time
+    const updatedTasks = updateTaskScheduledTime(tasks, taskId, newStartTime);
     setTasks(updatedTasks);
-    scheduler.setTasks(updatedTasks);
 
     // Use the reschedule method to update the timetable properly
-    const newTimetable = scheduler.rescheduleTask(taskId, newStartTime, timetable);
+    const newTimetable = rescheduleTaskInScheduler(taskId, newStartTime, timetable);
     setTimetable(newTimetable);
-    
-    // Update the schedule timeline with all scheduled tasks (exclude completed)
-    const allScheduledTasks = updatedTasks.filter(task => task.scheduledTime && !task.completed);
-    const scheduleBlocks: ScheduleBlock[] = allScheduledTasks.map(task => ({
-      id: `scheduled-${task.id}`,
-      type: 'task' as const,
-      taskId: task.id,
-      task: task,
-      startTime: new Date(task.scheduledTime!),
-      endTime: new Date(task.scheduledTime!.getTime() + task.duration * 60000),
-      title: task.name,
-      description: `${task.type} • ${task.priority} priority • ${task.duration}m`,
-    }));
-    setSchedule(scheduleBlocks.sort((a, b) => a.startTime.getTime() - b.startTime.getTime()));
+    setSchedule(convertTasksToScheduleBlocks(updatedTasks));
     
     const taskName = updatedTasks.find(t => t.id === taskId)?.name || 'Task';
     toast({
@@ -250,7 +182,7 @@ export default function Dashboard() {
   };
 
   const handleAddUnavailableTime = (startTime: Date, endTime: Date, title: string, description?: string) => {
-    // Create and store the unavailable block
+    // Create the unavailable block
     const newBlock: UnavailableBlock = {
       id: crypto.randomUUID(),
       startTime,
@@ -259,49 +191,27 @@ export default function Dashboard() {
       description
     };
     
-    // Check for overlapping tasks that need to be rescheduled
-    const conflictingTasks = timetable.filter(block => {
-      if (block.type !== 'task' || !block.task) return false;
-      return startTime < block.endTime && endTime > block.startTime;
-    });
+    // Use the enhanced scheduler method for proper conflict resolution
+    const { updatedTimetable, rescheduledTasksCount } = addUnavailableBlockAndReschedule(newBlock, selectedDate);
     
+    // Update state with the new block and timetable
     setUnavailableBlocks(prev => [...prev, newBlock]);
-    
-    // Immediately regenerate timetable to reschedule conflicting tasks
-    const updatedUnavailableBlocks = [...unavailableBlocks, newBlock];
-    scheduler.setTasks(tasks);
-    scheduler.setUnavailableBlocks(updatedUnavailableBlocks);
-    const newTimetable = scheduler.generateTimetable(selectedDate);
-    setTimetable(newTimetable);
+    setTimetable(updatedTimetable);
     
     // Update tasks with new scheduled times and sync to timeline
     const updatedTasks = tasks.map(task => {
-      const taskBlock = newTimetable.find(block => block.taskId === task.id);
+      const taskBlock = updatedTimetable.find(block => block.taskId === task.id);
       if (taskBlock && !task.completed) {
         return { ...task, scheduledTime: taskBlock.startTime };
       }
       return task;
     });
     setTasks(updatedTasks);
+    setSchedule(convertTasksToScheduleBlocks(updatedTasks));
     
-    // Update schedule timeline with rescheduled tasks
-    const allScheduledTasks = updatedTasks.filter(task => task.scheduledTime && !task.completed);
-    const scheduleBlocks: ScheduleBlock[] = allScheduledTasks.map(task => ({
-      id: `scheduled-${task.id}`,
-      type: 'task' as const,
-      taskId: task.id,
-      task: task,
-      startTime: new Date(task.scheduledTime!),
-      endTime: new Date(task.scheduledTime!.getTime() + task.duration * 60000),
-      title: task.name,
-      description: `${task.type} • ${task.priority} priority • ${task.duration}m`,
-    }));
-    setSchedule(scheduleBlocks.sort((a, b) => a.startTime.getTime() - b.startTime.getTime()));
-    
-    const conflictCount = conflictingTasks.length;
     toast({
       title: "Time blocked",
-      description: `"${title}" added.${conflictCount > 0 ? ` ${conflictCount} task${conflictCount > 1 ? 's' : ''} rescheduled.` : ''}`,
+      description: `"${title}" added.${rescheduledTasksCount > 0 ? ` ${rescheduledTasksCount} task${rescheduledTasksCount > 1 ? 's' : ''} rescheduled.` : ''}`,
     });
   };
 
@@ -311,97 +221,27 @@ export default function Dashboard() {
       id: crypto.randomUUID()
     };
     
-    // Check for overlapping tasks across multiple days if it's a recurring block
-    let conflictingTasksCount = 0;
-    if (block.recurring) {
-      // For recurring blocks, check current date and next few days for conflicts
-      const datesToCheck = [selectedDate];
-      if (block.recurring.type === 'daily') {
-        // Check next 7 days for daily recurring blocks
-        for (let i = 1; i <= 7; i++) {
-          const futureDate = new Date(selectedDate);
-          futureDate.setDate(futureDate.getDate() + i);
-          datesToCheck.push(futureDate);
-        }
-      } else if (block.recurring.type === 'weekly' && block.recurring.days) {
-        // Check next 4 weeks for weekly recurring blocks
-        for (let week = 0; week < 4; week++) {
-          for (const dayOfWeek of block.recurring.days) {
-            const futureDate = new Date(selectedDate);
-            futureDate.setDate(futureDate.getDate() + (week * 7) + (dayOfWeek - selectedDate.getDay()));
-            if (futureDate >= selectedDate) {
-              datesToCheck.push(futureDate);
-            }
-          }
-        }
-      }
-      
-      // Estimate conflicts across dates
-      datesToCheck.forEach(date => {
-        const estimatedConflicts = tasks.filter(task => {
-          if (!task.scheduledTime || task.completed) return false;
-          const taskDate = new Date(task.scheduledTime);
-          const isSameDate = taskDate.toDateString() === date.toDateString();
-          if (!isSameDate) return false;
-          
-          const blockStart = new Date(date);
-          blockStart.setHours(block.startTime.getHours(), block.startTime.getMinutes(), 0, 0);
-          const blockEnd = new Date(date);
-          blockEnd.setHours(block.endTime.getHours(), block.endTime.getMinutes(), 0, 0);
-          
-          const taskEnd = new Date(task.scheduledTime.getTime() + task.duration * 60000);
-          return taskDate < blockEnd && taskEnd > blockStart;
-        });
-        conflictingTasksCount += estimatedConflicts.length;
-      });
-    } else {
-      // For one-time blocks, check only the specific date
-      const blockDate = new Date(block.startTime);
-      const conflictingTasks = timetable.filter(timeBlock => {
-        if (timeBlock.type !== 'task' || !timeBlock.task) return false;
-        const blockStart = new Date(block.startTime);
-        const blockEnd = new Date(block.endTime);
-        return blockStart < timeBlock.endTime && blockEnd > timeBlock.startTime;
-      });
-      conflictingTasksCount = conflictingTasks.length;
-    }
+    // Use the enhanced scheduler method to add block and reschedule conflicts
+    const { updatedTimetable, rescheduledTasksCount } = addUnavailableBlockAndReschedule(newBlock, selectedDate);
     
+    // Update state with the new block and timetable
     setUnavailableBlocks(prev => [...prev, newBlock]);
+    setTimetable(updatedTimetable);
     
-    // Immediately regenerate timetable to reschedule conflicting tasks
-    const updatedUnavailableBlocks = [...unavailableBlocks, newBlock];
-    scheduler.setTasks(tasks);
-    scheduler.setUnavailableBlocks(updatedUnavailableBlocks);
-    const newTimetable = scheduler.generateTimetable(selectedDate);
-    setTimetable(newTimetable);
-    
-    // Update tasks with new scheduled times and sync to timeline
+    // Update tasks with new scheduled times from the updated timetable
     const updatedTasks = tasks.map(task => {
-      const taskBlock = newTimetable.find(timeBlock => timeBlock.taskId === task.id);
+      const taskBlock = updatedTimetable.find(timeBlock => timeBlock.taskId === task.id);
       if (taskBlock && !task.completed) {
         return { ...task, scheduledTime: taskBlock.startTime };
       }
       return task;
     });
     setTasks(updatedTasks);
-    
-    // Update schedule timeline with rescheduled tasks
-    const allScheduledTasks = updatedTasks.filter(task => task.scheduledTime && !task.completed);
-    const scheduleBlocks: ScheduleBlock[] = allScheduledTasks.map(task => ({
-      id: `scheduled-${task.id}`,
-      type: 'task' as const,
-      taskId: task.id,
-      task: task,
-      startTime: new Date(task.scheduledTime!),
-      endTime: new Date(task.scheduledTime!.getTime() + task.duration * 60000),
-      title: task.name,
-      description: `${task.type} • ${task.priority} priority • ${task.duration}m`,
-    }));
-    setSchedule(scheduleBlocks.sort((a, b) => a.startTime.getTime() - b.startTime.getTime()));
+    setSchedule(convertTasksToScheduleBlocks(updatedTasks));
     
     toast({
       title: "Unavailable time added",
-      description: `"${block.title}" added.${conflictingTasksCount > 0 ? ` ${conflictingTasksCount} task${conflictingTasksCount > 1 ? 's' : ''} will be rescheduled.` : ''}`,
+      description: `"${block.title}" added.${rescheduledTasksCount > 0 ? ` ${rescheduledTasksCount} task${rescheduledTasksCount > 1 ? 's' : ''} rescheduled.` : ''}`,
     });
   };
 
@@ -438,12 +278,11 @@ export default function Dashboard() {
 
       if (matchingBlock && matchingBlock.recurring) {
         // For recurring blocks, add an exception instead of deleting
-        scheduler.addExceptionToRecurringBlock(matchingBlock.id, selectedDate);
+        const dateString = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}-${String(selectedDate.getDate()).padStart(2, '0')}`;
         
         // Update the unavailableBlocks to include the exception
         setUnavailableBlocks(prev => prev.map(b => {
           if (b.id === matchingBlock.id) {
-            const dateString = selectedDate.toISOString().split('T')[0];
             const exceptions = b.recurring?.exceptions || [];
             if (!exceptions.includes(dateString)) {
               return {

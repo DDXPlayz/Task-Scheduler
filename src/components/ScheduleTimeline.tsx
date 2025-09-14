@@ -1,6 +1,5 @@
 import { ScheduleBlock, TimeBlock, Task } from '@/types/task';
-import { Card } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { Card, Badge } from '@/components/ui/basic';
 import { Clock, Coffee, Briefcase, BookOpen, Gamepad2, Calendar } from 'lucide-react';
 
 interface ScheduleTimelineProps {
